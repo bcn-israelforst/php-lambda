@@ -1,31 +1,41 @@
-process.env['PATH'] = process.env['PATH'] + ':' + process.env['LAMBDA_TASK_ROOT'];
+#!/opt/bin/php
+<?php
 
-const spawn = require('child_process').spawn;
+// This invokes Composer's autoloader so that we'll be able to use Guzzle and any other 3rd party libraries we need.
+require __DIR__ . '/vendor/autoload.php';
 
-exports.handler = function(event, context) {
+// This is the request processing loop. Barring unrecoverable failure, this loop runs until the environment shuts down.
+do {
+    // Ask the runtime API for a request to handle.
+    $request = getNextRequest();
 
-    //var php = spawn('php',['helloLambda.php']); //local debug only
-    var php = spawn('php-7-bin/bin/php',['helloLambda.php']);
-    var output = "";
+    // Obtain the function name from the _HANDLER environment variable and ensure the function's code is available.
+    $handlerFunction = array_slice(explode('.', $_ENV['_HANDLER']), -1)[0];
+    require_once $_ENV['LAMBDA_TASK_ROOT'] . '/src/' . $handlerFunction . '.php';
 
-    //send the input event json as string via STDIN to php process
-    php.stdin.write(JSON.stringify(event));
+    // Execute the desired function and obtain the response.
+    $response = $handlerFunction($request['payload']);
 
-    //close the php stream to unblock php process
-    php.stdin.end();
+    // Submit the response back to the runtime API.
+    sendResponse($request['invocationId'], $response);
+} while (true);
 
-    //dynamically collect php output
-    php.stdout.on('data', function(data) {
-          output+=data;
-    });
+function getNextRequest()
+{
+    $client = new \GuzzleHttp\Client();
+    $response = $client->get('http://' . $_ENV['AWS_LAMBDA_RUNTIME_API'] . '/2018-06-01/runtime/invocation/next');
 
-    //react to potential errors
-    php.stderr.on('data', function(data) {
-            console.log("STDERR: "+data);
-    });
+    return [
+      'invocationId' => $response->getHeader('Lambda-Runtime-Aws-Request-Id')[0],
+      'payload' => json_decode((string) $response->getBody(), true)
+    ];
+}
 
-    //finalize when php process is done.
-    php.on('close', function(code) {
-            context.succeed(JSON.parse(output));
-    });
+function sendResponse($invocationId, $response)
+{
+    $client = new \GuzzleHttp\Client();
+    $client->post(
+    'http://' . $_ENV['AWS_LAMBDA_RUNTIME_API'] . '/2018-06-01/runtime/invocation/' . $invocationId . '/response',
+       ['body' => $response]
+    );
 }
